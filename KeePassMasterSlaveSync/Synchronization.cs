@@ -607,12 +607,7 @@ namespace KeePassMasterSlaveSync
                 foreach (string group in settings.Group.Split(','))
                 {
                     // group only export
-                    PwGroup groupToExport = sourceDb.RootGroup.GetFlatGroupList().FirstOrDefault(g => g.Name == group);
-
-                    if (groupToExport == null)
-                    {
-                        throw new ArgumentException("No group with the name of the Group-Setting found.");
-                    }
+                    PwGroup groupToExport = FindSyncGroup(sourceDb, group);
 
                     PwObjectList<PwEntry> groupEntries = groupToExport.GetEntries(true);
                     // Prevent duplicated entries
@@ -626,13 +621,7 @@ namespace KeePassMasterSlaveSync
                 // Tag and group export
                 foreach (string group in settings.Group.Split(','))
                 {
-                    PwGroup groupToExport = sourceDb.RootGroup.GetFlatGroupList().FirstOrDefault(g => g.Name == group);
-
-
-                    if (groupToExport == null)
-                    {
-                        throw new ArgumentException("No group with the name of the Group-Setting found.");
-                    }
+                    PwGroup groupToExport = FindSyncGroup(sourceDb, group);
 
                     foreach (string tag in settings.Tag.Split(','))
                     {
@@ -652,6 +641,68 @@ namespace KeePassMasterSlaveSync
             }
 
             return entries;
+        }
+
+        /// <summary>
+        /// Finds the group of a Group-Setting. A path (Group/Subgroup, without the root group) selects exactly
+        /// that group. A plain name selects the group closest to the root, so a group with the same name deeper
+        /// in the tree (e.g. Servers/Customers/Name) is not taken instead. Groups in the recycle bin are ignored.
+        /// </summary>
+        private static PwGroup FindSyncGroup(PwDatabase db, string setting)
+        {
+            string name = setting.Trim();
+            PwGroup found = null;
+
+            if (name.Contains("/"))
+            {
+                found = db.RootGroup;
+                string[] parts = name.Split('/').Select(p => p.Trim()).Where(p => p.Length > 0).ToArray();
+                for (int i = 0; i < parts.Length && found != null; i++)
+                {
+                    // The root group name may be part of the path
+                    if (i == 0 && parts.Length > 1 && parts[0] == db.RootGroup.Name &&
+                        !db.RootGroup.Groups.Any(g => g.Name == parts[0]))
+                        continue;
+
+                    string part = parts[i];
+                    found = found.Groups.FirstOrDefault(g => g.Name == part && !IsRecycleBin(g, db));
+                }
+            }
+            else
+            {
+                int bestLevel = int.MaxValue;
+                foreach (PwGroup g in db.RootGroup.GetFlatGroupList())
+                {
+                    if (g.Name != name || IsRecycleBin(g, db))
+                        continue;
+
+                    int level = 0;
+                    for (PwGroup p = g.ParentGroup; p != null; p = p.ParentGroup)
+                        level++;
+                    if (level < bestLevel)
+                    {
+                        bestLevel = level;
+                        found = g;
+                    }
+                }
+            }
+
+            if (found == null || found == db.RootGroup)
+                throw new ArgumentException("No group found for the Group-Setting \"" + name + "\".");
+
+            return found;
+        }
+
+        private static bool IsRecycleBin(PwGroup group, PwDatabase db)
+        {
+            if (db.RecycleBinUuid.Equals(PwUuid.Zero))
+                return false;
+
+            for (PwGroup g = group; g != null; g = g.ParentGroup)
+                if (g.Uuid.Equals(db.RecycleBinUuid))
+                    return true;
+
+            return false;
         }
 
         private static void CopyEntriesAndGroups(SyncDatabase source, Settings settings, PwObjectList<PwEntry> entries,
